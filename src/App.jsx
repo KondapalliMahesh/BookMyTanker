@@ -1,4 +1,5 @@
 import {useState,useEffect,useMemo} from 'react'
+import { supabase } from './supabase'
 const useLS=(k,d)=>{const[v,s]=useState(()=>{try{return JSON.parse(localStorage.getItem(k))??d}catch{return d}});useEffect(()=>localStorage.setItem(k,JSON.stringify(v)),[k,v]);return[v,s]}
 // Demo data: replace with your backend API. lat/lng are real Hyderabad localities, p = {litres: price in ₹}
 const TANKERS=[
@@ -28,18 +29,48 @@ function Track({b}){ // GPS tracking is live only during the booked slot
  return<div style={{color:'#1f9d55',fontWeight:600}}>● Live tracking on {pos&&<a href={`https://maps.google.com/?q=${pos.latitude},${pos.longitude}`} target="_blank">Open map</a>}</div>}
 
 export default function App(){
- const[user,setUser]=useLS('u',null),[bal,setBal]=useLS('bal',0),[pwd,setPwd]=useLS('pwd',''),[bks,setBks]=useLS('bks',[]),[pend,setPend]=useLS('pend',[])
+const[user,setUser]=useState(null),[authLoading,setAuthLoading]=useState(true),[bal,setBal]=useLS('bal',0),[pwd,setPwd]=useLS('pwd',''),[bks,setBks]=useLS('bks',[]),[pend,setPend]=useLS('pend',[])
  const[scr,setScr]=useState('home'),[sel,setSel]=useState(null),[loc,setLoc]=useState(null),[place,setPlace]=useState('Detecting…')
  const[sort,setSort]=useState('d'),[qty,setQty]=useState(0),[fil,setFil]=useState(false),[toast,setToast]=useState('')
  const getLoc=()=>{if(!navigator.geolocation)return setPlace('Location not available');setPlace('Detecting…')
   navigator.geolocation.getCurrentPosition(async p=>{const c={lat:p.coords.latitude,lng:p.coords.longitude};setLoc(c)
    try{const r=await(await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${c.lat}&lon=${c.lng}`)).json();setPlace(r.display_name.split(',').slice(0,3).join(','))}catch{setPlace(`${c.lat.toFixed(3)}, ${c.lng.toFixed(3)}`)}},
    ()=>{setLoc(null);setPlace('Location not available')},{enableHighAccuracy:true})}
+   const getAppUser = u => u ? ({
+ name: u.user_metadata?.name || u.email?.split('@')[0] || 'User',
+ phone: u.user_metadata?.phone || '',
+ email: u.email || ''
+}) : null
+
+useEffect(()=>{
+ let mounted = true
+
+ supabase.auth.getSession().then(({data,error})=>{
+  if(!mounted)return
+  if(error)console.error(error)
+  setUser(getAppUser(data.session?.user))
+  setAuthLoading(false)
+ })
+
+ const {data:{subscription}} = supabase.auth.onAuthStateChange(
+  (_event,session)=>{
+   if(!mounted)return
+   setUser(getAppUser(session?.user))
+   setAuthLoading(false)
+  }
+ )
+
+ return ()=>{
+  mounted = false
+  subscription.unsubscribe()
+ }
+},[])
  useEffect(()=>{if(user)getLoc()},[user])
  const list=useMemo(()=>!loc?[]:TANKERS.map(t=>({...t,d:km(loc,t)})).filter(t=>t.d<=7&&(!qty||t.p[qty])).map(t=>({...t,q:qty||+Object.keys(t.p)[0]})).sort((a,b)=>sort==='p'?a.p[a.q]-b.p[b.q]:sort==='r'?b.r-a.r:a.d-b.d),[loc,qty,sort])
  const say=m=>{setToast(m);setTimeout(()=>setToast(''),3000)}
 
- if(!user)return<Signup done={setUser}/>
+if(authLoading)return <Wrap><div className="card mut">Checking login...</div></Wrap>
+if(!user)return<Signup done={setUser}/>
  const ini=user.name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase()
  const go=s=>()=>setScr(s)
 
@@ -61,7 +92,12 @@ export default function App(){
   <div className="card row sp"><div><div className="cap" style={{margin:0}}>Wallet balance</div><div className="serif" style={{fontSize:40}}>{inr(bal)}</div></div><button className="book" style={{background:'var(--teal)',color:'#fff'}} onClick={go('wallet')}>＋ Add</button></div>
   <div className="card" style={{padding:'0 18px'}}>{[['🧾','My bookings','Slots, addresses and tracking','bookings'],['🔒','Manage password','Set a 4-digit wallet password','password'],['🛡️','Wallet top-up approvals','Confirm UPI payments','approvals']].map(([i,t,s,k])=>
    <div className="li" key={k} onClick={go(k)}><div className="pin">{i}</div><div style={{flex:1}}><b style={{fontSize:19}}>{t}</b><div className="mut">{s}</div></div>›</div>)}</div>
-  <button className="btn red" onClick={()=>{setUser(null);setScr('home')}}>⎋ Sign out</button></Wrap>
+  <button className="btn red" onClick={async()=>{
+ const {error}=await supabase.auth.signOut()
+ if(error){say(error.message);return}
+ setUser(null)
+ setScr('home')
+}}>⎋ Sign out</button></Wrap>
 
  return<Wrap>
   <div className="top"><button className="pin" onClick={getLoc}>◎</button><div className="loc"><div className="cap" style={{margin:0}}>Your location</div><b>{place}</b></div>
@@ -84,20 +120,118 @@ export default function App(){
 const Wrap=({children})=><div className="app">{children}</div>
 const Toast=({t})=>t?<div style={{position:'fixed',bottom:24,left:'50%',transform:'translateX(-50%)',background:'#14242b',color:'#fff',padding:'12px 20px',borderRadius:99,zIndex:20}}>{t}</div>:null
 
-function Signup({done}){ // demo OTP is 123456 — connect an SMS provider (MSG91/Twilio) for production
- const[n,setN]=useState(''),[p,setP]=useState(''),[o,setO]=useState(''),[sent,setSent]=useState(false),[e,setE]=useState('')
- const send=()=>{if(!n.trim()||!/^[6-9]\d{9}$/.test(p))return setE('Enter your name and a valid 10-digit mobile number');setE('');setSent(true)}
- const verify=()=>o==='123456'?done({name:n.trim(),phone:p}):setE('Incorrect OTP')
- return<Wrap><div style={{paddingTop:60}}><div className="eyebrow">Hyderabad</div><h1 style={{margin:'12px 0'}}>Book My Tanker</h1><p className="mut" style={{fontSize:18}}>Sign up to book verified water tankers near you.</p>
-  <div className="cap">Name</div><input className="input" value={n} onChange={x=>setN(x.target.value)} placeholder="Your name"/>
-  <div className="cap">Mobile number</div><input className="input" inputMode="numeric" maxLength={10} value={p} onChange={x=>setP(x.target.value.replace(/\D/g,''))} placeholder="10-digit number"/>
-  {sent&&<><div className="cap">OTP (demo: 123456)</div><input className="input" inputMode="numeric" maxLength={6} value={o} onChange={x=>setO(x.target.value)}/></>}
-  {e&&<p style={{color:'#d93a2b'}}>{e}</p>}<button className="btn" onClick={sent?verify:send}>{sent?'Verify & continue':'Send OTP'}</button></div></Wrap>}
 
-function PwdSet({pwd,setPwd}){const[a,setA]=useState(''),[b,setB]=useState('')
- return<div className="card"><div className="cap" style={{marginTop:0}}>New 4-digit password</div><input className="input" type="password" inputMode="numeric" maxLength={4} value={a} onChange={e=>setA(e.target.value.replace(/\D/g,''))}/>
- <div className="cap">Confirm</div><input className="input" type="password" inputMode="numeric" maxLength={4} value={b} onChange={e=>setB(e.target.value.replace(/\D/g,''))}/>
- <button className="btn" disabled={a.length!==4||a!==b} onClick={()=>setPwd(a)}>{pwd?'Change password':'Save password'}</button></div>}
+function Signup({done}) {
+ const [n,setN] = useState('')
+ const [p,setP] = useState('')
+ const [email,setEmail] = useState('')
+ const [o,setO] = useState('')
+ const [sent,setSent] = useState(false)
+ const [e,setE] = useState('')
+ const [loading,setLoading] = useState(false)
+
+ const send = async () => {
+  if (!n.trim() || !/^[6-9]\d{9}$/.test(p)) {
+   return setE('Enter your name and a valid 10-digit mobile number')
+  }
+
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+   return setE('Enter a valid email address')
+  }
+
+  setLoading(true)
+  setE('')
+
+  const {error} = await supabase.auth.signInWithOtp({
+   email: email.trim().toLowerCase(),
+   options: {
+    shouldCreateUser: true,
+    data: {
+     name: n.trim(),
+     phone: p
+    }
+   }
+  })
+
+  setLoading(false)
+
+  if (error) {
+   setE(error.message)
+   return
+  }
+
+  setSent(true)
+ }
+
+ const verify = async () => {
+  if (!o.trim()) return setE('Enter the OTP')
+
+  setLoading(true)
+  setE('')
+
+  const {data,error} = await supabase.auth.verifyOtp({
+   email: email.trim().toLowerCase(),
+   token: o.trim(),
+   type: 'email'
+  })
+
+  setLoading(false)
+
+  if (error) {
+   setE(error.message)
+   return
+  }
+
+  done({
+   name: n.trim(),
+   phone: p,
+   email: email.trim().toLowerCase()
+  })
+ }
+
+ return <Wrap>
+  <div style={{paddingTop:60}}>
+   <div className="eyebrow">Hyderabad</div>
+   <h1 style={{margin:'12px 0'}}>Book My Tanker</h1>
+   <p className="mut" style={{fontSize:18}}>
+    Sign up to book verified water tankers near you.
+   </p>
+
+   <div className="cap">Name</div>
+   <input className="input" value={n}
+    onChange={x=>setN(x.target.value)}
+    placeholder="Your name"/>
+
+   <div className="cap">Mobile number</div>
+   <input className="input" inputMode="numeric"
+    maxLength={10} value={p}
+    onChange={x=>setP(x.target.value.replace(/\D/g,''))}
+    placeholder="10-digit number"/>
+
+   <div className="cap">Email address</div>
+   <input className="input" type="email"
+    value={email}
+    onChange={x=>setEmail(x.target.value)}
+    placeholder="Your email address"/>
+
+   {sent && <>
+    <div className="cap">Enter 6-digit OTP</div>
+    <input className="input" inputMode="numeric"
+     maxLength={6} value={o}
+     onChange={x=>setO(x.target.value.replace(/\D/g,''))}
+     placeholder="Enter OTP"/>
+   </>}
+
+   {e && <p style={{color:'#d93a2b'}}>{e}</p>}
+
+   <button className="btn" disabled={loading}
+    onClick={sent?verify:send}>
+    {loading?'Please wait...':sent?'Verify & continue':'Send OTP'}
+   </button>
+  </div>
+ </Wrap>
+}
+
 
 function Wallet({bal,pend,setPend,say,goA}){
  const[amt,setAmt]=useState(500),[app,setApp]=useState(1)
